@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenLayers Polygon Draw and Log Points from WMS</title>
+    <link rel="stylesheet" href="https://openlayers.org/en/v6.14.1/css/ol.css">
+    <style>
+        .map {
+            height: 90vh;
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+    <div id="map" class="map"></div>
+    <button id="drawPolygon">Draw Polygon</button>
+
+    <script src="https://cdn.jsdelivr.net/npm/ol/dist/ol.js"></script>
+    <script>
+        // Basic map setup
+        const map = new ol.Map({
+            target: 'map',
+            layers: [
+                new ol.layer.Tile({
+                    source: new ol.source.OSM(),
+                }),
+                new ol.layer.Image({
+                    source: new ol.source.ImageWMS({
+                        url: 'https://ahocevar.com/geoserver/wms',
+                        params: {'LAYERS': 'topp:states', 'TILED': true},
+                        ratio: 1,
+                        serverType: 'geoserver',
+                    }),
+                }),
+            ],
+            view: new ol.View({
+                center: ol.proj.fromLonLat([-98.583333, 39.833333]),
+                zoom: 4,
+            }),
+        });
+
+        // Vector layer for drawing
+        const source = new ol.source.Vector();
+        const vectorLayer = new ol.layer.Vector({
+            source: source,
+        });
+        map.addLayer(vectorLayer);
+
+        // Drawing interaction for polygons
+        const drawPolygon = new ol.interaction.Draw({
+            source: source,
+            type: 'Polygon',
+        });
+
+        // Event listener for draw end
+        drawPolygon.on('drawend', async (event) => {
+            const drawnFeature = event.feature;
+            const polygonGeometry = drawnFeature.getGeometry();
+
+            // Get the bounding box of the drawn polygon
+            const extent = polygonGeometry.getExtent();
+            const [minX, minY, maxX, maxY] = extent;
+            
+            const projection = map.getView().getProjection();
+            const transformedMin = ol.proj.transform([minX, minY], projection, 'EPSG:4326');
+            const transformedMax = ol.proj.transform([maxX, maxY], projection, 'EPSG:4326');
+            const bbox = transformedMin.concat(transformedMax).join(',');
+
+            // Fetch features from the WMS layer within the drawn polygon's bounding box
+            const url = `http://localhost:8080/geoserver/WS_ONE/ows?service=WFS&version=1.0.0&request=GetFeature&typeName=india_ds_pgis&outputFormat=application/json`;
+            const response = await fetch(url);
+            const geojson = await response.json();
+
+            const format = new ol.format.GeoJSON();
+            const features = format.readFeatures(geojson, {
+                featureProjection: projection
+            });
+
+            // Filter features within the drawn polygon
+            const featuresWithinPolygon = features.filter(feature => {
+                const geometry = feature.getGeometry();
+                return polygonGeometry.intersectsExtent(geometry.getExtent());
+            });
+
+             // Log the coordinates of the points, polygons, and multi-polygons within the polygon
+             const pointsWithinPolygon = [];
+            const polygonsWithinPolygon = [];
+            const multiPolygonsWithinPolygon = [];
+
+            // Log the coordinates of the points within the polygon
+            featuresWithinPolygon.forEach(feature => {
+                const geometry = feature.getGeometry();
+                console.log(feature)
+                const type = geometry.getType();
+                if (type === 'Point') {
+                    pointsWithinPolygon.push(geometry.getCoordinates());
+                } else if (type === 'Polygon') {
+                    polygonsWithinPolygon.push(geometry.getCoordinates());
+                } else if (type === 'MultiPolygon') {
+                    multiPolygonsWithinPolygon.push(geometry.getCoordinates());
+                }
+            });
+
+            console.log('Points within the polygon:', pointsWithinPolygon);
+            console.log('Polygons within the polygon:', polygonsWithinPolygon);
+            console.log('MultiPolygons within the polygon:', multiPolygonsWithinPolygon);
+        });
+
+        document.getElementById('drawPolygon').addEventListener('click', () => {
+            map.addInteraction(drawPolygon);
+        });
+    </script>
+</body>
+</html>
