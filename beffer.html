@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OpenLayers Polygon Draw and Log Points from WMS</title>
+    <title>OpenLayers Polygon Draw and Buffer Creation</title>
     <link rel="stylesheet" href="https://openlayers.org/en/v6.14.1/css/ol.css">
     <style>
         .map {
@@ -14,9 +14,14 @@
 </head>
 <body>
     <div id="map" class="map"></div>
+    <input type="number" id="latitude" placeholder="Latitude">
+    <input type="number" id="longitude" placeholder="Longitude">
+    <input type="number" id="radius" placeholder="Radius (meters)">
+    <button id="createBuffer">Create Buffer</button>
     <button id="drawPolygon">Draw Polygon</button>
 
     <script src="https://cdn.jsdelivr.net/npm/ol/dist/ol.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@turf/turf/turf.min.js"></script>
     <script>
         // Basic map setup
         const map = new ol.Map({
@@ -31,6 +36,7 @@
                         params: {'LAYERS': 'topp:states', 'TILED': true},
                         ratio: 1,
                         serverType: 'geoserver',
+                        crossOrigin: 'anonymous' // Ensure cross-origin requests are allowed
                     }),
                 }),
             ],
@@ -44,6 +50,15 @@
         const source = new ol.source.Vector();
         const vectorLayer = new ol.layer.Vector({
             source: source,
+            style: new ol.style.Style({
+                fill: new ol.style.Fill({
+                    color: 'rgba(0, 0, 255, 0.1)'
+                }),
+                stroke: new ol.style.Stroke({
+                    color: '#0000FF',
+                    width: 2
+                })
+            })
         });
         map.addLayer(vectorLayer);
 
@@ -61,7 +76,7 @@
             // Get the bounding box of the drawn polygon
             const extent = polygonGeometry.getExtent();
             const [minX, minY, maxX, maxY] = extent;
-            
+
             const projection = map.getView().getProjection();
             const transformedMin = ol.proj.transform([minX, minY], projection, 'EPSG:4326');
             const transformedMax = ol.proj.transform([maxX, maxY], projection, 'EPSG:4326');
@@ -83,15 +98,13 @@
                 return polygonGeometry.intersectsExtent(geometry.getExtent());
             });
 
-             // Log the coordinates of the points, polygons, and multi-polygons within the polygon
-             const pointsWithinPolygon = [];
+            // Log the coordinates of the points, polygons, and multi-polygons within the polygon
+            const pointsWithinPolygon = [];
             const polygonsWithinPolygon = [];
             const multiPolygonsWithinPolygon = [];
 
-            // Log the coordinates of the points within the polygon
             featuresWithinPolygon.forEach(feature => {
                 const geometry = feature.getGeometry();
-                console.log(feature)
                 const type = geometry.getType();
                 if (type === 'Point') {
                     pointsWithinPolygon.push(geometry.getCoordinates());
@@ -109,6 +122,90 @@
 
         document.getElementById('drawPolygon').addEventListener('click', () => {
             map.addInteraction(drawPolygon);
+        });
+
+        document.getElementById('createBuffer').addEventListener('click', async () => {
+            const lat = parseFloat(document.getElementById('latitude').value);
+            const lon = parseFloat(document.getElementById('longitude').value);
+            const radius = parseFloat(document.getElementById('radius').value);
+
+            if (isNaN(lat) || isNaN(lon) || isNaN(radius)) {
+                alert('Please enter valid latitude, longitude, and radius.');
+                return;
+            }
+
+            // Create a point and buffer using Turf.js
+            const point = turf.point([lon, lat]);
+            const buffer = turf.buffer(point, radius, { units: 'meters' });
+
+            // Transform buffer coordinates to map projection
+            const bufferCoords = buffer.geometry.coordinates[0].map(coord => ol.proj.transform(coord, 'EPSG:4326', map.getView().getProjection()));
+
+            // Create a buffer feature and add it to the vector source
+            const bufferFeature = new ol.Feature({
+                geometry: new ol.geom.Polygon([bufferCoords])
+            });
+            source.addFeature(bufferFeature);
+
+            // Highlight the buffer region
+            bufferFeature.setStyle(new ol.style.Style({
+                fill: new ol.style.Fill({
+                    color: 'rgba(255, 0, 0, 0.1)'
+                }),
+                stroke: new ol.style.Stroke({
+                    color: '#FF0000',
+                    width: 2
+                })
+            }));
+
+            // Fetch features from the WMS layer within the buffer's bounding box
+            const bbox = turf.bbox(buffer).join(',');
+            const url = `http://localhost:8080/geoserver/WS_ONE/ows?service=WFS&version=1.0.0&request=GetFeature&typeName=india_ds_pgis&outputFormat=application/json&bbox=${bbox},EPSG:4326`;
+            const response = await fetch(url);
+            const geojson = await response.json();
+
+            const format = new ol.format.GeoJSON();
+            const features = format.readFeatures(geojson, {
+                featureProjection: map.getView().getProjection()
+            });
+
+            console.log('Fetched features:', features); // Add this line to check if features are being fetched
+
+            // Filter features within the buffer using Turf.js
+            const featuresWithinBuffer = features.filter(feature => {
+                const featureGeoJSON = format.writeFeatureObject(feature);
+                const geometryType = featureGeoJSON.geometry.type;
+                console.log('Feature GeoJSON:', featureGeoJSON); // Add this line to check feature GeoJSON
+                if (geometryType === 'Point') {
+                    return turf.booleanPointInPolygon(turf.point(featureGeoJSON.geometry.coordinates), buffer);
+                } else if (geometryType === 'Polygon' || geometryType === 'MultiPolygon') {
+                    return turf.booleanOverlap(buffer, featureGeoJSON);
+                }
+                return false;
+            });
+
+            console.log('Filtered features within buffer:', featuresWithinBuffer); // Add this line to check filtered features
+
+            // Log the coordinates of the points, polygons, and multi-polygons within the buffer
+            const pointsWithinBuffer = [];
+            const polygonsWithinBuffer = [];
+            const multiPolygonsWithinBuffer = [];
+
+            featuresWithinBuffer.forEach(feature => {
+                const geometry = feature.getGeometry();
+                const type = geometry.getType();
+                if (type === 'Point') {
+                    pointsWithinBuffer.push(geometry.getCoordinates());
+                } else if (type === 'Polygon') {
+                    polygonsWithinBuffer.push(geometry.getCoordinates());
+                } else if (type === 'MultiPolygon') {
+                    multiPolygonsWithinBuffer.push(geometry.getCoordinates());
+                }
+            });
+
+            console.log('Points within the buffer:', pointsWithinBuffer);
+            console.log('Polygons within the buffer:', polygonsWithinBuffer);
+            console.log('MultiPolygons within the buffer:', multiPolygonsWithinBuffer);
         });
     </script>
 </body>
