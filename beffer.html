@@ -267,7 +267,7 @@
 
             // Fetch features from the WMS layer within the buffer's bounding box
             const bbox = turf.bbox(buffer).join(',');
-            const url = `http://localhost:8080/geoserver/WS_ONE/ows?service=WFS&version=1.0.0&request=GetFeature&typeName=indian_dams&outputFormat=application/json&bbox=${bbox}`;
+            const url = `http://localhost:8080/geoserver/WS_ONE/ows?service=WFS&version=1.0.0&request=GetFeature&typeName=ASSAM_VILLAGE&outputFormat=application/json&bbox=${bbox}`;
             const response = await fetch(url);
             const geojson = await response.json();
 
@@ -297,10 +297,14 @@
             const pointsWithinBuffer = [];
             const polygonsWithinBuffer = [];
             const multiPolygonsWithinBuffer = [];
+            console.log(featuresWithinBuffer)
 
             featuresWithinBuffer.forEach(feature => {
+                console.log("type")
                 const geometry = feature.getGeometry();
                 const type = geometry.getType();
+
+                console.log(type)
                 if (type === 'Point') {
                     pointsWithinBuffer.push(geometry.getCoordinates());
                 } else if (type === 'Polygon') {
