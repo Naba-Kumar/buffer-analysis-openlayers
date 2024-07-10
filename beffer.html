@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -10,8 +11,57 @@
             height: 90vh;
             width: 100%;
         }
+
+        .ol-popup {
+            position: absolute;
+            background-color: white;
+            padding: 15px;
+            border: 1px solid #ccc;
+            bottom: 12px;
+            left: -50px;
+            min-width: 280px;
+        }
+
+        .ol-popup:after,
+        .ol-popup:before {
+            top: 100%;
+            border: solid transparent;
+            content: " ";
+            height: 0;
+            width: 0;
+            position: absolute;
+            pointer-events: none;
+        }
+
+        .ol-popup:after {
+            border-color: rgba(255, 255, 255, 0);
+            border-top-color: #fff;
+            border-width: 10px;
+            left: 48px;
+            margin-left: -10px;
+        }
+
+        .ol-popup:before {
+            border-color: rgba(204, 204, 204, 0);
+            border-top-color: #ccc;
+            border-width: 11px;
+            left: 48px;
+            margin-left: -11px;
+        }
+
+        .ol-popup-closer {
+            text-decoration: none;
+            position: absolute;
+            top: 2px;
+            right: 8px;
+        }
+
+        .ol-popup-closer:after {
+            content: "✖";
+        }
     </style>
 </head>
+
 <body>
     <div id="map" class="map"></div>
     <input type="number" id="latitude" placeholder="Latitude">
@@ -19,7 +69,13 @@
     <input type="number" id="radius" placeholder="Radius (meters)">
     <button id="createBuffer">Create Buffer</button>
     <button id="drawPolygon">Draw Polygon</button>
-
+    <div id="popup" class="ol-popup">
+        <a href="#" id="popup-closer" class="ol-popup-closer"></a>
+        <div id="popup-content"></div>
+    </div>
+    <div id="popup" style="position: absolute; background: white; padding: 10px; border: 1px solid #ccc; display: none; z-index: 1000;">
+        <div id="popup-content"></div>
+      </div>
     <script src="https://cdn.jsdelivr.net/npm/ol/dist/ol.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@turf/turf/turf.min.js"></script>
     <script>
@@ -29,15 +85,6 @@
             layers: [
                 new ol.layer.Tile({
                     source: new ol.source.OSM(),
-                }),
-                new ol.layer.Image({
-                    source: new ol.source.ImageWMS({
-                        url: 'https://ahocevar.com/geoserver/wms',
-                        params: {'LAYERS': 'topp:states', 'TILED': true},
-                        ratio: 1,
-                        serverType: 'geoserver',
-                        crossOrigin: 'anonymous' // Ensure cross-origin requests are allowed
-                    }),
                 }),
             ],
             view: new ol.View({
@@ -62,6 +109,23 @@
         });
         map.addLayer(vectorLayer);
 
+        // Overlay for popup
+        const popup = new ol.Overlay({
+            element: document.getElementById('popup'),
+            autoPan: true,
+            autoPanAnimation: {
+                duration: 250,
+            },
+        });
+        map.addOverlay(popup);
+
+        const closer = document.getElementById('popup-closer');
+        closer.onclick = function () {
+            popup.setPosition(undefined);
+            closer.blur();
+            return false;
+        };
+
         // Drawing interaction for polygons
         const drawPolygon = new ol.interaction.Draw({
             source: source,
@@ -69,56 +133,99 @@
         });
 
         // Event listener for draw end
+        // Event listener for draw end
+
+        // Event listener for draw end
         drawPolygon.on('drawend', async (event) => {
             const drawnFeature = event.feature;
             const polygonGeometry = drawnFeature.getGeometry();
 
-            // Get the bounding box of the drawn polygon
+            // Convert OpenLayers polygon geometry to GeoJSON
+            const format = new ol.format.GeoJSON();
+            const polygonGeoJSON = format.writeFeatureObject(drawnFeature);
+
+            // Fetch features from the WFS layer within the drawn polygon's bounding box
             const extent = polygonGeometry.getExtent();
-            const [minX, minY, maxX, maxY] = extent;
-
             const projection = map.getView().getProjection();
-            const transformedMin = ol.proj.transform([minX, minY], projection, 'EPSG:4326');
-            const transformedMax = ol.proj.transform([maxX, maxY], projection, 'EPSG:4326');
-            const bbox = transformedMin.concat(transformedMax).join(',');
+            const transformedExtent = ol.proj.transformExtent(extent, projection, 'EPSG:4326');
+            const bbox = transformedExtent.join(',');
 
-            // Fetch features from the WMS layer within the drawn polygon's bounding box
-            const url = `http://localhost:8080/geoserver/WS_ONE/ows?service=WFS&version=1.0.0&request=GetFeature&typeName=india_ds_pgis&outputFormat=application/json`;
+            const url = `http://localhost:8080/geoserver/WS_ONE/ows?service=WFS&version=1.0.0&request=GetFeature&typeName=india_ds_pgis&outputFormat=application/json&bbox=${bbox}`;
             const response = await fetch(url);
             const geojson = await response.json();
 
-            const format = new ol.format.GeoJSON();
             const features = format.readFeatures(geojson, {
                 featureProjection: projection
             });
 
-            // Filter features within the drawn polygon
-            const featuresWithinPolygon = features.filter(feature => {
-                const geometry = feature.getGeometry();
-                return polygonGeometry.intersectsExtent(geometry.getExtent());
-            });
+            console.log('Fetched features:', features); // Check if features are being fetched
 
-            // Log the coordinates of the points, polygons, and multi-polygons within the polygon
+            // Convert drawn polygon to Turf.js polygon
+            const turfPolygon = turf.polygon(polygonGeoJSON.geometry.coordinates);
+
+            // Filter features within the drawn polygon using Turf.js
             const pointsWithinPolygon = [];
             const polygonsWithinPolygon = [];
             const multiPolygonsWithinPolygon = [];
 
-            featuresWithinPolygon.forEach(feature => {
-                const geometry = feature.getGeometry();
-                const type = geometry.getType();
+            features.forEach(feature => {
+                const featureGeoJSON = format.writeFeatureObject(feature);
+                const type = featureGeoJSON.geometry.type;
+
                 if (type === 'Point') {
-                    pointsWithinPolygon.push(geometry.getCoordinates());
+                    if (turf.booleanPointInPolygon(turf.point(featureGeoJSON.geometry.coordinates), turfPolygon)) {
+                        pointsWithinPolygon.push(feature);
+                    }
                 } else if (type === 'Polygon') {
-                    polygonsWithinPolygon.push(geometry.getCoordinates());
+                    if (turf.booleanOverlap(turf.polygon(featureGeoJSON.geometry.coordinates), turfPolygon)) {
+                        polygonsWithinPolygon.push(feature);
+                    }
                 } else if (type === 'MultiPolygon') {
-                    multiPolygonsWithinPolygon.push(geometry.getCoordinates());
+                    const multiPolygon = turf.multiPolygon(featureGeoJSON.geometry.coordinates);
+                    if (turf.booleanOverlap(multiPolygon, turfPolygon)) {
+                        multiPolygonsWithinPolygon.push(feature);
+                    }
                 }
             });
 
             console.log('Points within the polygon:', pointsWithinPolygon);
             console.log('Polygons within the polygon:', polygonsWithinPolygon);
             console.log('MultiPolygons within the polygon:', multiPolygonsWithinPolygon);
+
+            // Function to display feature attributes in a popup
+            function displayPopup(features) {
+                const popup = document.getElementById('popup');
+                const popupContent = document.getElementById('popup-content');
+                let contentHTML = '';
+
+                features.forEach((feature, index) => {
+                    const properties = feature.getProperties();
+                    contentHTML += `<h4>Feature ${index + 1}</h4>`;
+                    for (const key in properties) {
+                        if (key !== 'geometry') {
+                            contentHTML += `<p><strong>${key}:</strong> ${properties[key]}</p>`;
+                        }
+                    }
+                });
+
+                if (contentHTML) {
+                    popupContent.innerHTML = contentHTML;
+                    popup.style.display = 'block';
+                } else {
+                    popup.style.display = 'none';
+                }
+            }
+
+            // Combine all features within the polygon for display
+            const allFeaturesWithinPolygon = pointsWithinPolygon.concat(polygonsWithinPolygon, multiPolygonsWithinPolygon);
+
+            if (allFeaturesWithinPolygon.length > 0) {
+                displayPopup(allFeaturesWithinPolygon);
+            } else {
+                console.log('No features found within the polygon.');
+            }
         });
+
 
         document.getElementById('drawPolygon').addEventListener('click', () => {
             map.addInteraction(drawPolygon);
@@ -160,7 +267,7 @@
 
             // Fetch features from the WMS layer within the buffer's bounding box
             const bbox = turf.bbox(buffer).join(',');
-            const url = `http://localhost:8080/geoserver/WS_ONE/ows?service=WFS&version=1.0.0&request=GetFeature&typeName=india_ds_pgis&outputFormat=application/json&bbox=${bbox},EPSG:4326`;
+            const url = `http://localhost:8080/geoserver/WS_ONE/ows?service=WFS&version=1.0.0&request=GetFeature&typeName=indian_dams&outputFormat=application/json&bbox=${bbox}`;
             const response = await fetch(url);
             const geojson = await response.json();
 
@@ -206,7 +313,23 @@
             console.log('Points within the buffer:', pointsWithinBuffer);
             console.log('Polygons within the buffer:', polygonsWithinBuffer);
             console.log('MultiPolygons within the buffer:', multiPolygonsWithinBuffer);
+
+            // Create popup content
+            const content = document.getElementById('popup-content');
+            content.innerHTML = `<p>Number of features: ${features.length}</p>`;
+
+            features.forEach(feature => {
+                const attributes = feature.getProperties();
+                console.log(attributes)
+                delete attributes.geometry; // Remove the geometry property
+                content.innerHTML += `<p>${JSON.stringify(attributes)}</p>`;
+            });
+
+            // Show popup at the center of the buffer
+            const bufferCenter = ol.extent.getCenter(bufferFeature.getGeometry().getExtent());
+            popup.setPosition(bufferCenter);
         });
     </script>
 </body>
+
 </html>
